@@ -1,0 +1,9 @@
+fastapi
+uvicorn[standard]
+SQLAlchemy
+alembic
+python-jose[cryptography]
+passlib[bcrypt]
+qrcode[pil]
+Pillow
+python-multipart
