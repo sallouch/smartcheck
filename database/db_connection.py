@@ -2,7 +2,7 @@ import sqlite3
 import os
 # Database setup
 
-db_path ="C:\\SmartCheckDB\\smartcheck.db"
+db_path ="smartcheck.db"
 def get_connection():
     conn = sqlite3.connect(db_path)
     conn.execute("PRAGMA foreign_keys = ON")# enforce foreign keys
