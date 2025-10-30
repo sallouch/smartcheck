@@ -1,3 +1,4 @@
+# smartcheck/services/attendance_service.py
 from typing import Dict, List
 from database import user_repository, attendance_repository
 
