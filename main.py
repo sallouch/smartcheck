@@ -11,3 +11,6 @@ app.include_router(attendancecontroller.router)
 @app.get("/")
 def root():
     return {"message": "Bienvenue sur SmartCheck API"}
+if __name__ == "__main__":
+    main()
+print
