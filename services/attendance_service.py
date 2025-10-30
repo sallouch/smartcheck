@@ -1,131 +1,178 @@
-from sqlalchemy.orm import Session
-from datetime import datetime, date, timedelta
-from typing import List, Dict, Any, Optional
-from sqlalchemy import and_, or_, func
-
-from ..models.attendance_models import Presence, Absence
-from ..models.user_models import Etudiant, Enseignant
-from ..models.academic_models import Seance, Classe
+from datetime import datetime, timedelta
+from typing import Dict, List
+from database.attendance_repository import (
+    get_all_sessions, 
+    get_sessions_by_teacher,
+    get_presences_by_session,
+    get_students_by_presence
+)
 
 class AttendanceService:
     def __init__(self):
-        self.absence_thresholds = {
-            "cours": 3,      # 3 absences max pour les cours
-            "td": 3,         # 3 absences max pour les TD
-            "tp": 2          # 2 absence max pour les TP
-        }
+        pass
     
-    def get_historique_etudiant(self, etudiant_id: int, db: Session) -> Dict[str, Any]:
-        """Obtenir l'historique complet des présences/absences d'un étudiant"""
+    def get_student_attendance_stats(self, etudiant_id: int) -> Dict:
+        """Récupère les statistiques de présence d'un étudiant"""
         try:
-            # Vérifier que l'étudiant existe
-            etudiant = db.query(Etudiant).filter(Etudiant.id == etudiant_id).first()
-            if not etudiant:
-                raise ValueError("Étudiant non trouvé")
+            # Récupérer toutes les séances
+            all_sessions = get_all_sessions()
             
-            # Récupérer toutes les présences de l'étudiant
-            presences = db.query(Presence).filter(
-                Presence.etudiant_id == etudiant_id
-            ).order_by(Presence.date_heure_scan.desc()).all()
+            # Compter les présences/absences
+            total_seances = 0
+            presences_count = 0
+            absences_count = 0
             
-            # Récupérer les absences (calculées)
-            absences = self._calculate_absences_for_student(etudiant_id, db)
+            for session in all_sessions:
+                session_id = session[0]
+                
+                # Récupérer les présences pour cette séance
+                presences = get_presences_by_session(session_id)
+                
+                # Vérifier si l'étudiant était présent
+                present_in_session = False
+                for presence in presences:
+                    if presence[2] == etudiant_id and presence[3] == 1:  # id_etudiant et present=1
+                        present_in_session = True
+                        break
+                
+                total_seances += 1
+                if present_in_session:
+                    presences_count += 1
+                else:
+                    absences_count += 1
             
-            # Statistiques
-            total_seances_potentielles = self._get_total_seances_potentielles(etudiant_id, db)
-            presence_count = len(presences)
-            absence_count = len(absences)
-            
-            taux_presence = (presence_count / total_seances_potentielles) * 100 if total_seances_potentielles > 0 else 0
-            
-            # Vérifier les seuils d'alerte
-            alertes = self._check_absence_thresholds(etudiant_id, db)
+            # Calculer le taux de présence
+            taux_presence = (presences_count / total_seances * 100) if total_seances > 0 else 0
             
             return {
-                "etudiant": {
-                    "id": etudiant.id,
-                    "nom": etudiant.nom,
-                    "email": etudiant.email,
-                    "matricule": getattr(etudiant, 'matricule', 'N/A')
-                },
+                "success": True,
+                "etudiant_id": etudiant_id,
                 "statistiques": {
-                    "total_presences": presence_count,
-                    "total_absences": absence_count,
-                    "total_seances_potentielles": total_seances_potentielles,
-                    "taux_presence": round(taux_presence, 2),
-                    "seuils_atteints": alertes
-                },
-                "presences": [
-                    {
-                        "id": p.id,
-                        "seance_id": p.seance_id,
-                        "date_heure_scan": p.date_heure_scan,
-                        "matiere": self._get_matiere_from_seance(p.seance_id, db),
-                        "type_seance": self._get_type_seance(p.seance_id, db),
-                        "enseignant": self._get_enseignant_from_seance(p.seance_id, db)
-                    } for p in presences
-                ],
-                "absences": [
-                    {
-                        "date": a.date,
-                        "matiere": a.matiere,
-                        "type_seance": a.type_seance,
-                        "enseignant": a.enseignant,
-                        "justifiee": getattr(a, 'justifiee', False)
-                    } for a in absences
-                ],
-                "derniere_mise_a_jour": datetime.now().isoformat()
+                    "total_seances": total_seances,
+                    "presences": presences_count,
+                    "absences": absences_count,
+                    "taux_presence": round(taux_presence, 2)
+                }
             }
             
         except Exception as e:
-            raise ValueError(f"Erreur lors de la récupération de l'historique: {str(e)}")
+            return {"success": False, "message": f"Erreur: {str(e)}"}
     
-    def get_historique_etudiant_par_matiere(self, etudiant_id: int, matiere: str, db: Session) -> Dict[str, Any]:
-        """Obtenir l'historique des présences/absences pour une matière spécifique"""
+    def get_teacher_attendance_report(self, enseignant_id: int) -> Dict:
+        """Génère un rapport de présence pour un enseignant"""
         try:
-            # Récupérer toutes les présences de l'étudiant pour cette matière
-            presences_matiere = []
-            toutes_presences = db.query(Presence).filter(
-                Presence.etudiant_id == etudiant_id
-            ).all()
+            # Récupérer les séances de l'enseignant
+            sessions = get_sessions_by_teacher(enseignant_id)
             
-            for presence in toutes_presences:
-                matiere_seance = self._get_matiere_from_seance(presence.seance_id, db)
-                if matiere_seance.lower() == matiere.lower():
-                    presences_matiere.append(presence)
+            rapport = []
+            total_presences = 0
+            total_etudiants = 0
             
-            # Calculer les absences pour cette matière
-            absences_matiere = self._calculate_absences_for_student_matiere(etudiant_id, matiere, db)
+            for session in sessions:
+                session_id, id_matiere, id_classe, id_enseignant, date, heure_debut, heure_fin, statut = session
+                
+                # Récupérer les étudiants présents
+                etudiants_presents = get_students_by_presence(session_id, present=1)
+                etudiants_absents = get_students_by_presence(session_id, present=0)
+                
+                nb_presents = len(etudiants_presents)
+                nb_absents = len(etudiants_absents)
+                total_etudiants_session = nb_presents + nb_absents
+                
+                taux_presence_session = (nb_presents / total_etudiants_session * 100) if total_etudiants_session > 0 else 0
+                
+                rapport.append({
+                    "session_id": session_id,
+                    "date": date,
+                    "heure_debut": heure_debut,
+                    "heure_fin": heure_fin,
+                    "statut": statut,
+                    "presents": nb_presents,
+                    "absents": nb_absents,
+                    "taux_presence": round(taux_presence_session, 2),
+                    "liste_presents": [f"{etudiant[0]} {etudiant[1]}" for etudiant in etudiants_presents],
+                    "liste_absents": [f"{etudiant[0]} {etudiant[1]}" for etudiant in etudiants_absents]
+                })
+                
+                total_presences += nb_presents
+                total_etudiants += total_etudiants_session
             
-            # Statistiques pour la matière
-            total_seances_matiere = len(presences_matiere) + len(absences_matiere)
-            taux_presence_matiere = (len(presences_matiere) / total_seances_matiere) * 100 if total_seances_matiere > 0 else 0
+            # Calculer les statistiques globales
+            taux_presence_global = (total_presences / total_etudiants * 100) if total_etudiants > 0 else 0
             
             return {
-                "etudiant_id": etudiant_id,
-                "matiere": matiere,
-                "statistiques_matiere": {
-                    "presences": len(presences_matiere),
-                    "absences": len(absences_matiere),
-                    "total_seances": total_seances_matiere,
-                    "taux_presence": round(taux_presence_matiere, 2)
+                "success": True,
+                "enseignant_id": enseignant_id,
+                "statistiques_globales": {
+                    "total_sessions": len(sessions),
+                    "total_presences": total_presences,
+                    "total_etudiants": total_etudiants,
+                    "taux_presence_global": round(taux_presence_global, 2)
                 },
-                "presences": [
-                    {
-                        "id": p.id,
-                        "seance_id": p.seance_id,
-                        "date_heure_scan": p.date_heure_scan,
-                        "type_seance": self._get_type_seance(p.seance_id, db)
-                    } for p in presences_matiere
-                ],
-                "absences": [
-                    {
-                        "date": a.date,
-                        "type_seance": a.type_seance,
-                        "justifiee": getattr(a, 'justifiee', False)
-                    } for a in absences_matiere
-                ]
+                "rapport_detaille": rapport
             }
+            
+        except Exception as e:
+            return {"success": False, "message": f"Erreur: {str(e)}"}
+    
+    def get_session_attendance_details(self, session_id: int) -> Dict:
+        """Récupère les détails de présence pour une séance spécifique"""
+        try:
+            # Récupérer les présences pour cette séance
+            presences = get_presences_by_session(session_id)
+            
+            etudiants_presents = []
+            etudiants_absents = []
+            
+            for presence in presences:
+                presence_id, id_seance, id_etudiant, present, timestamp = presence
+                
+                # Ici vous devriez récupérer les infos de l'étudiant depuis la base
+                # Pour l'instant, on utilise juste l'ID
+                if present == 1:
+                    etudiants_presents.append({
+                        "etudiant_id": id_etudiant,
+                        "timestamp": timestamp
+                    })
+                else:
+                    etudiants_absents.append({
+                        "etudiant_id": id_etudiant,
+                        "timestamp": timestamp
+                    })
+            
+            return {
+                "success": True,
+                "session_id": session_id,
+                "presents": {
+                    "count": len(etudiants_presents),
+                    "etudiants": etudiants_presents
+                },
+                "absents": {
+                    "count": len(etudiants_absents),
+                    "etudiants": etudiants_absents
+                },
+                "total_etudiants": len(etudiants_presents) + len(etudiants_absents),
+                "taux_presence": (len(etudiants_presents) / (len(etudiants_presents) + len(etudiants_absents)) * 100) if (len(etudiants_presents) + len(etudiants_absents)) > 0 else 0
+            }
+            
+        except Exception as e:
+            return {"success": False, "message": f"Erreur: {str(e)}"}
+    
+    def get_attendance_alerts(self, seuil_absences: int = 3) -> Dict:
+        """Génère des alertes pour les étudiants avec trop d'absences"""
+        try:
+            # Cette fonction nécessite une logique plus avancée
+            # Pour l'instant, retourne un message indiquant la fonctionnalité
+            return {
+                "success": True,
+                "message": "Fonctionnalité d'alertes d'absences",
+                "description": "Cette fonctionnalité identifiera les étudiants dépassant le seuil d'absences",
+                "seuil_actuel": seuil_absences,
+                "alerts": []  # À implémenter avec une logique de détection
+            }
+            
+        except Exception as e:
+            return {"success": False, "message": f"Erreur: {str(e)}"}
             
         except Exception as e:
             raise ValueError(f"Erreur lors de la récupération de l'historique matière: {str(e)}")
