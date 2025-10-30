@@ -1,11 +1,7 @@
 from datetime import datetime, timedelta
 from typing import Dict, List
-from database.attendance_repository import (
-    get_all_sessions, 
-    get_sessions_by_teacher,
-    get_presences_by_session,
-    get_students_by_presence
-)
+import sqlite3
+from database.db_connection import get_connection
 
 class AttendanceService:
     def __init__(self):
@@ -14,32 +10,65 @@ class AttendanceService:
     def get_student_attendance_stats(self, etudiant_id: int) -> Dict:
         """Récupère les statistiques de présence d'un étudiant"""
         try:
-            # Récupérer toutes les séances
-            all_sessions = get_all_sessions()
+            conn = get_connection()
+            cursor = conn.cursor()
             
-            # Compter les présences/absences
+            # Vérifier que l'utilisateur est bien un étudiant
+            cursor.execute("SELECT role FROM utilisateurs WHERE id = ?", (etudiant_id,))
+            user = cursor.fetchone()
+            if not user or user[0] != 'etudiant':
+                return {"success": False, "message": "Utilisateur non trouvé ou n'est pas un étudiant"}
+            
+            # Récupérer toutes les séances
+            cursor.execute("SELECT id FROM seances")
+            all_sessions = cursor.fetchall()
+            
             total_seances = 0
             presences_count = 0
             absences_count = 0
+            details = []
             
             for session in all_sessions:
                 session_id = session[0]
                 
-                # Récupérer les présences pour cette séance
-                presences = get_presences_by_session(session_id)
+                # Récupérer les infos de la séance
+                cursor.execute("""
+                    SELECT s.date, s.heure_debut, m.nom_matiere, c.nom_classe
+                    FROM seances s
+                    JOIN matieres m ON s.id_matiere = m.id
+                    JOIN classes c ON s.id_classe = c.id
+                    WHERE s.id = ?
+                """, (session_id,))
+                
+                session_info = cursor.fetchone()
+                if not session_info:
+                    continue
+                    
+                date, heure_debut, nom_matiere, nom_classe = session_info
                 
                 # Vérifier si l'étudiant était présent
-                present_in_session = False
-                for presence in presences:
-                    if presence[2] == etudiant_id and presence[3] == 1:  # id_etudiant et present=1
-                        present_in_session = True
-                        break
+                cursor.execute("""
+                    SELECT present FROM presences 
+                    WHERE id_seance = ? AND id_etudiant = ?
+                """, (session_id, etudiant_id))
+                
+                presence_data = cursor.fetchone()
+                present = presence_data[0] if presence_data else 0
                 
                 total_seances += 1
-                if present_in_session:
+                if present == 1:
                     presences_count += 1
                 else:
                     absences_count += 1
+                
+                details.append({
+                    "session_id": session_id,
+                    "date": date,
+                    "heure_debut": heure_debut,
+                    "matiere": nom_matiere,
+                    "classe": nom_classe,
+                    "present": bool(present)
+                })
             
             # Calculer le taux de présence
             taux_presence = (presences_count / total_seances * 100) if total_seances > 0 else 0
@@ -52,61 +81,101 @@ class AttendanceService:
                     "presences": presences_count,
                     "absences": absences_count,
                     "taux_presence": round(taux_presence, 2)
-                }
+                },
+                "details": details
             }
             
         except Exception as e:
             return {"success": False, "message": f"Erreur: {str(e)}"}
+        finally:
+            conn.close()
     
     def get_teacher_attendance_report(self, enseignant_id: int) -> Dict:
         """Génère un rapport de présence pour un enseignant"""
         try:
-            # Récupérer les séances de l'enseignant
-            sessions = get_sessions_by_teacher(enseignant_id)
+            conn = get_connection()
+            cursor = conn.cursor()
             
+            # Vérifier que l'utilisateur est bien un enseignant
+            cursor.execute("SELECT nom, prenom FROM utilisateurs WHERE id = ? AND role = 'enseignant'", (enseignant_id,))
+            enseignant = cursor.fetchone()
+            if not enseignant:
+                return {"success": False, "message": "Enseignant non trouvé"}
+            
+            nom_enseignant, prenom_enseignant = enseignant
+            
+            # Récupérer les séances de l'enseignant
+            cursor.execute("""
+                SELECT s.id, s.date, s.heure_debut, s.heure_fin, m.nom_matiere, c.nom_classe
+                FROM seances s
+                JOIN matieres m ON s.id_matiere = m.id
+                JOIN classes c ON s.id_classe = c.id
+                WHERE s.id_enseignant = ?
+                ORDER BY s.date DESC, s.heure_debut DESC
+            """, (enseignant_id,))
+            
+            sessions = cursor.fetchall()
             rapport = []
             total_presences = 0
-            total_etudiants = 0
+            total_etudiants_potentiels = 0
             
             for session in sessions:
-                session_id, id_matiere, id_classe, id_enseignant, date, heure_debut, heure_fin, statut = session
+                session_id, date, heure_debut, heure_fin, nom_matiere, nom_classe = session
                 
-                # Récupérer les étudiants présents
-                etudiants_presents = get_students_by_presence(session_id, present=1)
-                etudiants_absents = get_students_by_presence(session_id, present=0)
+                # Compter les étudiants présents
+                cursor.execute("""
+                    SELECT COUNT(*) FROM presences 
+                    WHERE id_seance = ? AND present = 1
+                """, (session_id,))
+                nb_presents = cursor.fetchone()[0]
                 
-                nb_presents = len(etudiants_presents)
-                nb_absents = len(etudiants_absents)
-                total_etudiants_session = nb_presents + nb_absents
+                # Estimer le nombre total d'étudiants (basé sur la classe)
+                cursor.execute("""
+                    SELECT COUNT(*) FROM utilisateurs 
+                    WHERE role = 'etudiant'
+                    -- Ici vous devriez avoir une table de liaison étudiants-classes
+                    -- Pour l'instant on utilise une estimation
+                """)
+                nb_total_etudiants = cursor.fetchone()[0] or 1  # Éviter division par zéro
                 
-                taux_presence_session = (nb_presents / total_etudiants_session * 100) if total_etudiants_session > 0 else 0
+                nb_absents = nb_total_etudiants - nb_presents
+                taux_presence_session = (nb_presents / nb_total_etudiants * 100) if nb_total_etudiants > 0 else 0
+                
+                # Récupérer la liste des présents
+                cursor.execute("""
+                    SELECT u.nom, u.prenom 
+                    FROM presences p
+                    JOIN utilisateurs u ON p.id_etudiant = u.id
+                    WHERE p.id_seance = ? AND p.present = 1
+                """, (session_id,))
+                etudiants_presents = [f"{row[0]} {row[1]}" for row in cursor.fetchall()]
                 
                 rapport.append({
                     "session_id": session_id,
                     "date": date,
                     "heure_debut": heure_debut,
                     "heure_fin": heure_fin,
-                    "statut": statut,
+                    "matiere": nom_matiere,
+                    "classe": nom_classe,
                     "presents": nb_presents,
                     "absents": nb_absents,
                     "taux_presence": round(taux_presence_session, 2),
-                    "liste_presents": [f"{etudiant[0]} {etudiant[1]}" for etudiant in etudiants_presents],
-                    "liste_absents": [f"{etudiant[0]} {etudiant[1]}" for etudiant in etudiants_absents]
+                    "liste_presents": etudiants_presents
                 })
                 
                 total_presences += nb_presents
-                total_etudiants += total_etudiants_session
+                total_etudiants_potentiels += nb_total_etudiants
             
             # Calculer les statistiques globales
-            taux_presence_global = (total_presences / total_etudiants * 100) if total_etudiants > 0 else 0
+            taux_presence_global = (total_presences / total_etudiants_potentiels * 100) if total_etudiants_potentiels > 0 else 0
             
             return {
                 "success": True,
+                "enseignant": f"{prenom_enseignant} {nom_enseignant}",
                 "enseignant_id": enseignant_id,
                 "statistiques_globales": {
                     "total_sessions": len(sessions),
                     "total_presences": total_presences,
-                    "total_etudiants": total_etudiants,
                     "taux_presence_global": round(taux_presence_global, 2)
                 },
                 "rapport_detaille": rapport
@@ -114,35 +183,68 @@ class AttendanceService:
             
         except Exception as e:
             return {"success": False, "message": f"Erreur: {str(e)}"}
+        finally:
+            conn.close()
     
     def get_session_attendance_details(self, session_id: int) -> Dict:
         """Récupère les détails de présence pour une séance spécifique"""
         try:
-            # Récupérer les présences pour cette séance
-            presences = get_presences_by_session(session_id)
+            conn = get_connection()
+            cursor = conn.cursor()
             
+            # Récupérer les infos de la séance
+            cursor.execute("""
+                SELECT s.date, s.heure_debut, m.nom_matiere, c.nom_classe, u.nom, u.prenom
+                FROM seances s
+                JOIN matieres m ON s.id_matiere = m.id
+                JOIN classes c ON s.id_classe = c.id
+                JOIN utilisateurs u ON s.id_enseignant = u.id
+                WHERE s.id = ?
+            """, (session_id,))
+            
+            session_info = cursor.fetchone()
+            if not session_info:
+                return {"success": False, "message": "Séance non trouvée"}
+            
+            date, heure_debut, nom_matiere, nom_classe, nom_enseignant, prenom_enseignant = session_info
+            
+            # Récupérer les présences
+            cursor.execute("""
+                SELECT p.id, u.nom, u.prenom, p.present, p.timestamp
+                FROM presences p
+                JOIN utilisateurs u ON p.id_etudiant = u.id
+                WHERE p.id_seance = ?
+                ORDER BY u.nom, u.prenom
+            """, (session_id,))
+            
+            presences = cursor.fetchall()
             etudiants_presents = []
             etudiants_absents = []
             
             for presence in presences:
-                presence_id, id_seance, id_etudiant, present, timestamp = presence
+                presence_id, nom, prenom, present, timestamp = presence
+                etudiant_info = {
+                    "etudiant_id": presence_id,
+                    "nom": nom,
+                    "prenom": prenom,
+                    "timestamp": timestamp
+                }
                 
-                # Ici vous devriez récupérer les infos de l'étudiant depuis la base
-                # Pour l'instant, on utilise juste l'ID
                 if present == 1:
-                    etudiants_presents.append({
-                        "etudiant_id": id_etudiant,
-                        "timestamp": timestamp
-                    })
+                    etudiants_presents.append(etudiant_info)
                 else:
-                    etudiants_absents.append({
-                        "etudiant_id": id_etudiant,
-                        "timestamp": timestamp
-                    })
+                    etudiants_absents.append(etudiant_info)
             
             return {
                 "success": True,
-                "session_id": session_id,
+                "session_info": {
+                    "session_id": session_id,
+                    "date": date,
+                    "heure_debut": heure_debut,
+                    "matiere": nom_matiere,
+                    "classe": nom_classe,
+                    "enseignant": f"{prenom_enseignant} {nom_enseignant}"
+                },
                 "presents": {
                     "count": len(etudiants_presents),
                     "etudiants": etudiants_presents
@@ -157,214 +259,49 @@ class AttendanceService:
             
         except Exception as e:
             return {"success": False, "message": f"Erreur: {str(e)}"}
+        finally:
+            conn.close()
     
     def get_attendance_alerts(self, seuil_absences: int = 3) -> Dict:
         """Génère des alertes pour les étudiants avec trop d'absences"""
         try:
-            # Cette fonction nécessite une logique plus avancée
-            # Pour l'instant, retourne un message indiquant la fonctionnalité
+            conn = get_connection()
+            cursor = conn.cursor()
+            
+            # Cette requête identifie les étudiants avec plus de X absences
+            cursor.execute("""
+                SELECT u.id, u.nom, u.prenom, u.email, 
+                       COUNT(*) as absences_count
+                FROM utilisateurs u
+                JOIN presences p ON u.id = p.id_etudiant
+                WHERE u.role = 'etudiant' AND p.present = 0
+                GROUP BY u.id, u.nom, u.prenom, u.email
+                HAVING COUNT(*) > ?
+                ORDER BY absences_count DESC
+            """, (seuil_absences,))
+            
+            alerts = cursor.fetchall()
+            result = []
+            
+            for alert in alerts:
+                etudiant_id, nom, prenom, email, absences_count = alert
+                result.append({
+                    "etudiant_id": etudiant_id,
+                    "nom": nom,
+                    "prenom": prenom,
+                    "email": email,
+                    "absences_count": absences_count,
+                    "seuil_depasse": True
+                })
+            
             return {
                 "success": True,
-                "message": "Fonctionnalité d'alertes d'absences",
-                "description": "Cette fonctionnalité identifiera les étudiants dépassant le seuil d'absences",
-                "seuil_actuel": seuil_absences,
-                "alerts": []  # À implémenter avec une logique de détection
+                "seuil_absences": seuil_absences,
+                "alerts": result,
+                "total_alertes": len(result)
             }
             
         except Exception as e:
             return {"success": False, "message": f"Erreur: {str(e)}"}
-            
-        except Exception as e:
-            raise ValueError(f"Erreur lors de la récupération de l'historique matière: {str(e)}")
-    
-    def get_resume_mensuel(self, etudiant_id: int, annee: int, mois: int, db: Session) -> Dict[str, Any]:
-        """Obtenir un résumé mensuel des présences/absences"""
-        try:
-            # Déterminer les dates de début et fin du mois
-            date_debut = date(annee, mois, 1)
-            if mois == 12:
-                date_fin = date(annee + 1, 1, 1) - timedelta(days=1)
-            else:
-                date_fin = date(annee, mois + 1, 1) - timedelta(days=1)
-            
-            # Récupérer les présences du mois
-            presences_mois = db.query(Presence).filter(
-                Presence.etudiant_id == etudiant_id,
-                Presence.date_heure_scan >= datetime.combine(date_debut, datetime.min.time()),
-                Presence.date_heure_scan <= datetime.combine(date_fin, datetime.max.time())
-            ).order_by(Presence.date_heure_scan).all()
-            
-            # Calculer les absences du mois
-            absences_mois = self._calculate_absences_for_period(etudiant_id, date_debut, date_fin, db)
-            
-            # Statistiques mensuelles
-            total_jours_cours = self._get_jours_cours_mois(annee, mois, db)
-            jours_presents = len(set(p.date_heure_scan.date() for p in presences_mois))
-            jours_absents = total_jours_cours - jours_presents
-            
-            return {
-                "etudiant_id": etudiant_id,
-                "periode": {
-                    "mois": mois,
-                    "annee": annee,
-                    "date_debut": date_debut,
-                    "date_fin": date_fin
-                },
-                "statistiques_mensuelles": {
-                    "jours_cours_total": total_jours_cours,
-                    "jours_presents": jours_presents,
-                    "jours_absents": jours_absents,
-                    "taux_presence_mensuel": (jours_presents / total_jours_cours) * 100 if total_jours_cours > 0 else 0
-                },
-                "details_par_semaine": self._get_details_par_semaine(presences_mois, absences_mois, annee, mois),
-                "presences_mois": [
-                    {
-                        "date": p.date_heure_scan.date(),
-                        "heure": p.date_heure_scan.time(),
-                        "matiere": self._get_matiere_from_seance(p.seance_id, db),
-                        "type_seance": self._get_type_seance(p.seance_id, db)
-                    } for p in presences_mois
-                ]
-            }
-            
-        except Exception as e:
-            raise ValueError(f"Erreur lors de la récupération du résumé mensuel: {str(e)}")
-    
-    # Méthodes privées
-    def _calculate_absences_for_student(self, etudiant_id: int, db: Session) -> List[Absence]:
-        """Calculer les absences d'un étudiant basé sur les séances manquées"""
-        absences = []
-        
-        # Récupérer toutes les séances auxquelles l'étudiant devrait assister
-        seances_etudiant = db.query(Seance).all()
-        
-        for seance in seances_etudiant:
-            presence = db.query(Presence).filter(
-                Presence.etudiant_id == etudiant_id,
-                Presence.seance_id == seance.id
-            ).first()
-            
-            if not presence:
-                absence = Absence(
-                    date=seance.date,
-                    matiere=self._get_matiere_from_seance(seance.id, db),
-                    etudiant_id=etudiant_id,
-                    type_seance=self._get_type_seance(seance.id, db),
-                    enseignant=self._get_enseignant_from_seance(seance.id, db)
-                )
-                absences.append(absence)
-        
-        return absences
-    
-    def _calculate_absences_for_student_matiere(self, etudiant_id: int, matiere: str, db: Session) -> List[Absence]:
-        """Calculer les absences d'un étudiant pour une matière spécifique"""
-        absences_matiere = []
-        toutes_absences = self._calculate_absences_for_student(etudiant_id, db)
-        
-        for absence in toutes_absences:
-            if absence.matiere.lower() == matiere.lower():
-                absences_matiere.append(absence)
-        
-        return absences_matiere
-    
-    def _calculate_absences_for_period(self, etudiant_id: int, date_debut: date, date_fin: date, db: Session) -> List[Absence]:
-        """Calculer les absences pour une période spécifique"""
-        absences_periode = []
-        toutes_absences = self._calculate_absences_for_student(etudiant_id, db)
-        
-        for absence in toutes_absences:
-            if date_debut <= absence.date <= date_fin:
-                absences_periode.append(absence)
-        
-        return absences_periode
-    
-    def _check_absence_thresholds(self, etudiant_id: int, db: Session) -> List[Dict[str, Any]]:
-        """Vérifier si l'étudiant atteint des seuils d'absence critiques"""
-        alertes = []
-        absences = self._calculate_absences_for_student(etudiant_id, db)
-        
-        # Compter les absences par type
-        absences_par_type = {}
-        for absence in absences:
-            type_seance = getattr(absence, 'type_seance', 'cours')
-            absences_par_type[type_seance] = absences_par_type.get(type_seance, 0) + 1
-        
-        # Vérifier les seuils
-        for type_seance, count in absences_par_type.items():
-            seuil = self.absence_thresholds.get(type_seance, 3)
-            if count >= seuil:
-                alertes.append({
-                    "type": type_seance,
-                    "absences": count,
-                    "seuil": seuil,
-                    "niveau": "CRITIQUE" if count > seuil else "ALERTE",
-                    "message": f"{count} absence(s) en {type_seance.upper()} - Seuil: {seuil}"
-                })
-        
-        return alertes
-    
-    def _get_matiere_from_seance(self, seance_id: int, db: Session) -> str:
-        """Obtenir le nom de la matière d'une séance"""
-        seance = db.query(Seance).filter(Seance.id == seance_id).first()
-        return getattr(seance, 'matiere', 'Inconnue') if seance else 'Inconnue'
-    
-    def _get_type_seance(self, seance_id: int, db: Session) -> str:
-        """Obtenir le type de séance (cours, td, tp)"""
-        seance = db.query(Seance).filter(Seance.id == seance_id).first()
-        return getattr(seance, 'type_seance', 'cours') if seance else 'cours'
-    
-    def _get_enseignant_from_seance(self, seance_id: int, db: Session) -> str:
-        """Obtenir le nom de l'enseignant d'une séance"""
-        seance = db.query(Seance).filter(Seance.id == seance_id).first()
-        if seance and seance.enseignant_id:
-            enseignant = db.query(Enseignant).filter(Enseignant.id == seance.enseignant_id).first()
-            return enseignant.nom if enseignant else "Inconnu"
-        return "Inconnu"
-    
-    def _get_total_seances_potentielles(self, etudiant_id: int, db: Session) -> int:
-        """Obtenir le nombre total de séances potentielles pour un étudiant"""
-        # Cette méthode doit être adaptée selon votre modèle de données
-        return db.query(Seance).count()
-    
-    def _get_jours_cours_mois(self, annee: int, mois: int, db: Session) -> int:
-        """Obtenir le nombre de jours de cours dans le mois"""
-        # Logique simplifiée - à adapter selon l'emploi du temps réel
-        date_debut = date(annee, mois, 1)
-        if mois == 12:
-            date_fin = date(annee + 1, 1, 1) - timedelta(days=1)
-        else:
-            date_fin = date(annee, mois + 1, 1) - timedelta(days=1)
-        
-        # Compter les jours de semaine (lundi-vendredi) dans le mois
-        jours_cours = 0
-        current_date = date_debut
-        while current_date <= date_fin:
-            if current_date.weekday() < 5:  # 0-4 = lundi-vendredi
-                jours_cours += 1
-            current_date += timedelta(days=1)
-        
-        return jours_cours
-    
-    def _get_details_par_semaine(self, presences: List[Presence], absences: List[Absence], annee: int, mois: int) -> List[Dict[str, Any]]:
-        """Obtenir les détails des présences/absences par semaine"""
-        semaines = []
-        
-        # Grouper par semaine
-        for semaine in range(1, 6):  # Semaines 1 à 5
-            debut_semaine = date(annee, mois, (semaine - 1) * 7 + 1)
-            fin_semaine = min(date(annee, mois, semaine * 7), date(annee, mois, 28))
-            
-            presences_semaine = [p for p in presences if debut_semaine <= p.date_heure_scan.date() <= fin_semaine]
-            absences_semaine = [a for a in absences if debut_semaine <= a.date <= fin_semaine]
-            
-            if presences_semaine or absences_semaine:
-                semaines.append({
-                    "semaine": semaine,
-                    "date_debut": debut_semaine,
-                    "date_fin": fin_semaine,
-                    "presences": len(presences_semaine),
-                    "absences": len(absences_semaine),
-                    "taux_presence": (len(presences_semaine) / (len(presences_semaine) + len(absences_semaine))) * 100 if (len(presences_semaine) + len(absences_semaine)) > 0 else 0
-                })
-        
-        return semaines
+        finally:
+            conn.close()
