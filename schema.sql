@@ -56,9 +56,10 @@ CREATE TABLE IF NOT EXISTS qrcodes (
     FOREIGN KEY (id_seance) REFERENCES seances(id)
 );
 CREATE TABLE IF NOT EXISTS tokens (
-    access_token TEXT PRIMARY KEY,
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    access_token TEXT UNIQUE NOT NULL,
     user_id INTEGER NOT NULL,
     role TEXT NOT NULL,
     expires_at TEXT NOT NULL,
-    FOREIGN KEY(user_id) REFERENCES utilisateurs(id)
+    FOREIGN KEY (user_id) REFERENCES utilisateurs(id)
 );
