@@ -1,229 +1,135 @@
+# services/qr_code_service.py
 import secrets
 import qrcode
 import base64
 import io
 from datetime import datetime, timedelta
-from typing import Dict, Optional
-import sqlite3
-from database.db_connection import get_connection
+from typing import Dict
+from database import qr_code_repository as qr_repo
+from database import attendance_repository as att_repo
 
 class QRCodeService:
     def __init__(self):
         pass
-    
+
     def generate_qr(self, id_seance: int, duree_validite_secondes: int = 30) -> Dict:
-        """Génère un QR code dynamique pour une séance"""
-        try:
-            conn = get_connection()
-            cursor = conn.cursor()
-            
-            # Vérifier si la séance existe
-            cursor.execute("SELECT id FROM seances WHERE id = ?", (id_seance,))
-            if not cursor.fetchone():
-                return {"success": False, "message": "Séance non trouvée"}
-            
-            # Générer un code unique
-            qr_token = secrets.token_urlsafe(32)
-            
-            # Calculer les dates
-            date_generation = datetime.now().isoformat()
-            expire_le = (datetime.now() + timedelta(seconds=duree_validite_secondes)).isoformat()
-            
-            # Désactiver les anciens QR codes pour cette séance
-            cursor.execute("UPDATE qrcodes SET actif = 0 WHERE id_seance = ?", (id_seance,))
-            
-            # Insérer le nouveau QR code
-            cursor.execute("""
-                INSERT INTO qrcodes (id_seance, code, date_generation, expire_le, actif)
-                VALUES (?, ?, ?, ?, ?)
-            """, (id_seance, qr_token, date_generation, expire_le, 1))
-            
-            conn.commit()
-            
-            # Créer l'image QR code
-            qr_data = f"SMARTCHECK:{id_seance}:{qr_token}"
-            qr = qrcode.QRCode(
-                version=1,
-                error_correction=qrcode.constants.ERROR_CORRECT_L,
-                box_size=10,
-                border=4,
-            )
-            qr.add_data(qr_data)
-            qr.make(fit=True)
-            
-            img = qr.make_image(fill_color="black", back_color="white")
-            
-            # Convertir en base64 pour l'API
-            buffer = io.BytesIO()
-            img.save(buffer, format="PNG")
-            qr_base64 = base64.b64encode(buffer.getvalue()).decode()
-            
-            return {
-                "success": True,
-                "qr_code_image": qr_base64,
-                "qr_token": qr_token,
-                "expire_le": expire_le,
-                "id_seance": id_seance,
-                "duree_validite": duree_validite_secondes
-            }
-            
-        except Exception as e:
-            return {"success": False, "message": f"Erreur génération QR: {str(e)}"}
-        finally:
-            conn.close()
-    
+        """Génère un QR code pour une séance"""
+        # Vérifier si la séance existe
+        sessions = att_repo.get_all_sessions()
+        if not any(s[0] == id_seance for s in sessions):
+            return {"success": False, "message": "Séance non trouvée"}
+
+        # Générer un code unique
+        qr_token = secrets.token_urlsafe(32)
+        date_generation = datetime.now().isoformat()
+        expire_le = (datetime.now() + timedelta(seconds=duree_validite_secondes)).isoformat()
+
+        # Désactiver les anciens QR codes pour cette séance
+        all_qrs = qr_repo.get_all_qr_codes()
+        for qr in all_qrs:
+            if qr[1] == id_seance and qr[5] == 1:  # qr[1]=id_seance, qr[5]=actif
+                qr_repo.deactivate_qr(qr[0])
+
+        # Insérer le nouveau QR code
+        success = qr_repo.insert_qr_code(id_seance, qr_token, date_generation, expire_le, 1)
+        if not success:
+            return {"success": False, "message": "Impossible de créer le QR code"}
+
+        # Générer l'image QR
+        qr_data = f"SMARTCHECK:{id_seance}:{qr_token}"
+        qr_img = qrcode.QRCode(
+            version=1,
+            error_correction=qrcode.constants.ERROR_CORRECT_L,
+            box_size=10,
+            border=4,
+        )
+        qr_img.add_data(qr_data)
+        qr_img.make(fit=True)
+        img = qr_img.make_image(fill_color="black", back_color="white")
+
+        buffer = io.BytesIO()
+        img.save(buffer, format="PNG")
+        qr_base64 = base64.b64encode(buffer.getvalue()).decode()
+
+        return {
+            "success": True,
+            "qr_code_image": qr_base64,
+            "qr_token": qr_token,
+            "expire_le": expire_le,
+            "id_seance": id_seance,
+            "duree_validite": duree_validite_secondes
+        }
+
     def scan_qr(self, qr_token: str, etudiant_id: int) -> Dict:
         """Traite le scan d'un QR code par un étudiant"""
-        try:
-            conn = get_connection()
-            cursor = conn.cursor()
-            
-            # Récupérer le QR code
-            cursor.execute("""
-                SELECT id, id_seance, code, date_generation, expire_le, actif 
-                FROM qrcodes WHERE code = ?
-            """, (qr_token,))
-            
-            qr_data = cursor.fetchone()
-            if not qr_data:
-                return {"success": False, "message": "QR code invalide"}
-            
-            qr_id, id_seance, code, date_generation, expire_le, actif = qr_data
-            
-            # Vérifier si le QR code est actif
-            if actif != 1:
-                return {"success": False, "message": "QR code déjà utilisé"}
-            
-            # Vérifier l'expiration
-            expire_time = datetime.fromisoformat(expire_le)
-            if datetime.now() > expire_time:
-                # Désactiver le QR code expiré
-                cursor.execute("UPDATE qrcodes SET actif = 0 WHERE id = ?", (qr_id,))
-                conn.commit()
-                return {"success": False, "message": "QR code expiré"}
-            
-            # Vérifier si l'étudiant est dans la classe de la séance
-            cursor.execute("""
-                SELECT s.id_classe 
-                FROM seances s
-                WHERE s.id = ?
-            """, (id_seance,))
-            
-            seance_data = cursor.fetchone()
-            if not seance_data:
-                return {"success": False, "message": "Séance non trouvée"}
-            
-            id_classe = seance_data[0]
-            
-            # Vérifier si l'étudiant existe et est bien un étudiant
-            cursor.execute("""
-                SELECT id, role FROM utilisateurs 
-                WHERE id = ? AND role = 'etudiant'
-            """, (etudiant_id,))
-            
-            etudiant = cursor.fetchone()
-            if not etudiant:
-                return {"success": False, "message": "Étudiant non trouvé ou rôle invalide"}
-            
-            # Vérifier si la présence n'est pas déjà enregistrée
-            cursor.execute("""
-                SELECT id FROM presences 
-                WHERE id_seance = ? AND id_etudiant = ?
-            """, (id_seance, etudiant_id))
-            
-            if cursor.fetchone():
-                return {"success": False, "message": "Présence déjà enregistrée pour cette séance"}
-            
-            # Enregistrer la présence
-            cursor.execute("""
-                INSERT INTO presences (id_seance, id_etudiant, present)
-                VALUES (?, ?, ?)
-            """, (id_seance, etudiant_id, 1))
-            
-            # Désactiver le QR code après utilisation
-            cursor.execute("UPDATE qrcodes SET actif = 0 WHERE id = ?", (qr_id,))
-            
-            conn.commit()
-            
-            return {
-                "success": True,
-                "message": "Présence enregistrée avec succès",
-                "id_seance": id_seance,
-                "id_etudiant": etudiant_id,
-                "timestamp": datetime.now().isoformat()
-            }
-            
-        except sqlite3.IntegrityError:
-            return {"success": False, "message": "Erreur d'intégrité - présence peut-être déjà enregistrée"}
-        except Exception as e:
-            return {"success": False, "message": f"Erreur traitement QR: {str(e)}"}
-        finally:
-            conn.close()
-    
+        qr_data = qr_repo.get_qr_by_code(qr_token)
+        if not qr_data:
+            return {"success": False, "message": "QR code invalide"}
+
+        qr_id, id_seance, _, date_generation, expire_le, actif = qr_data
+
+        if actif != 1:
+            return {"success": False, "message": "QR code déjà utilisé"}
+
+        # Vérifier l'expiration
+        if datetime.now() > datetime.fromisoformat(expire_le):
+            qr_repo.deactivate_qr(qr_id)
+            return {"success": False, "message": "QR code expiré"}
+
+        # Vérifier si présence déjà enregistrée
+        presences = att_repo.get_presences_by_session(id_seance)
+        if any(p[1] == etudiant_id for p in presences):  # p[1] = id_etudiant
+            return {"success": False, "message": "Présence déjà enregistrée"}
+
+        # Enregistrer la présence
+        success = att_repo.add_presence(id_seance, etudiant_id, 1)
+        if not success:
+            return {"success": False, "message": "Impossible d'enregistrer la présence"}
+
+        # Désactiver le QR code après utilisation
+        qr_repo.deactivate_qr(qr_id)
+
+        return {
+            "success": True,
+            "message": "Présence enregistrée avec succès",
+            "id_seance": id_seance,
+            "id_etudiant": etudiant_id,
+            "timestamp": datetime.now().isoformat()
+        }
+
     def get_active_qr_codes(self, id_enseignant: int = None) -> Dict:
         """Récupère les QR codes actifs, optionnellement filtrés par enseignant"""
-        try:
-            conn = get_connection()
-            cursor = conn.cursor()
-            
-            if id_enseignant:
-                # QR codes des séances d'un enseignant spécifique
-                cursor.execute("""
-                    SELECT q.id, q.id_seance, q.code, q.date_generation, q.expire_le, q.actif,
-                           s.date, s.heure_debut, m.nom_matiere, c.nom_classe
-                    FROM qrcodes q
-                    JOIN seances s ON q.id_seance = s.id
-                    JOIN matieres m ON s.id_matiere = m.id
-                    JOIN classes c ON s.id_classe = c.id
-                    WHERE q.actif = 1 AND s.id_enseignant = ?
-                """, (id_enseignant,))
-            else:
-                # Tous les QR codes actifs
-                cursor.execute("""
-                    SELECT q.id, q.id_seance, q.code, q.date_generation, q.expire_le, q.actif,
-                           s.date, s.heure_debut, m.nom_matiere, c.nom_classe
-                    FROM qrcodes q
-                    JOIN seances s ON q.id_seance = s.id
-                    JOIN matieres m ON s.id_matiere = m.id
-                    JOIN classes c ON s.id_classe = c.id
-                    WHERE q.actif = 1
-                """)
-            
-            qr_codes = cursor.fetchall()
-            result = []
-            
-            for qr in qr_codes:
-                qr_id, id_seance, code, date_generation, expire_le, actif, date, heure_debut, nom_matiere, nom_classe = qr
-                
-                # Vérifier si le QR code n'a pas expiré
-                expire_time = datetime.fromisoformat(expire_le)
-                if datetime.now() > expire_time:
-                    # Désactiver automatiquement les QR codes expirés
-                    cursor.execute("UPDATE qrcodes SET actif = 0 WHERE id = ?", (qr_id,))
-                    conn.commit()
+        active_qrs = qr_repo.get_all_qr_codes(actif=1)
+        result = []
+
+        sessions = att_repo.get_all_sessions() if id_enseignant else None
+
+        for qr in active_qrs:
+            qr_id, id_seance, code, date_gen, expire_le, _ = qr
+
+            # Vérifier expiration
+            if datetime.now() > datetime.fromisoformat(expire_le):
+                qr_repo.deactivate_qr(qr_id)
+                continue
+
+            # Filtrage par enseignant si demandé
+            if id_enseignant and sessions:
+                session = next((s for s in sessions if s[0] == id_seance), None)
+                if not session or session[3] != id_enseignant:  # session[3] = id_enseignant
                     continue
-                
-                result.append({
-                    "qr_id": qr_id,
-                    "id_seance": id_seance,
-                    "code": code,
-                    "date_generation": date_generation,
-                    "expire_le": expire_le,
-                    "date_seance": date,
-                    "heure_debut": heure_debut,
-                    "matiere": nom_matiere,
-                    "classe": nom_classe
-                })
-            
-            conn.commit()
-            
-            return {
-                "success": True,
-                "active_qr_codes": result,
-                "count": len(result)
-            }
-            
-        except Exception as e:
-            return {"success": False, "message": f"Erreur: {str(e)}"}
-        finally:
-            conn.close()
+                date, heure_debut, id_matiere, id_classe, *_ = session
+            else:
+                session = next((s for s in sessions if s[0] == id_seance), None) if sessions else None
+                date, heure_debut = session[4], session[5] if session else ("Unknown", "Unknown")
+
+            result.append({
+                "qr_id": qr_id,
+                "id_seance": id_seance,
+                "code": code,
+                "date_generation": date_gen,
+                "expire_le": expire_le,
+                "date_seance": date,
+                "heure_debut": heure_debut
+            })
+
+        return {"success": True, "active_qr_codes": result, "count": len(result)}
