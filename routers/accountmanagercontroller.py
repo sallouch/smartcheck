@@ -1,47 +1,32 @@
 from fastapi import APIRouter, HTTPException
-from datetime import datetime, timedelta
-from database.user_repository import AccountRepository  
-from user_models import Token
+from services.auth_service import AuthService
 
-router = APIRouter(prefix="/account", tags=["Account"])
+router = APIRouter(prefix="/auth", tags=["Authentication"])
 
-account_repo = AccountRepository()
+# ------------------- Login -------------------
+@router.post("/login")
+def login(email: str, password: str):
+    result = AuthService.authenticate_user(email, password)
+    if result:
+        return result
+    raise HTTPException(status_code=401, detail="Email ou mot de passe incorrect.")
+
+# ------------------- Validate Token -------------------
+@router.get("/validate")
+def validate_token(token: str):
+    is_valid = AuthService.validate_token(token)
+    return {"valid": is_valid}
+
+# ------------------- Logout -------------------
+@router.post("/logout")
+def logout(token: str):
+    from database.token_repository import delete_token
+    success = delete_token(token)
+    if success:
+        return {"message": "Déconnexion réussie."}
+    raise HTTPException(status_code=400, detail="Token invalide ou déjà supprimé.")
 
 
-
-# Générer un token pour un utilisateur
-
-"""@router.post("/generate_token")
-def generate_token(user_id: int, role: str):
-    
-    Crée un token pour un utilisateur et l'enregistre dans la base via le repository.
-    
-    expires = datetime.utcnow() + timedelta(hours=4)
-    token = f"token_{user_id}_{role}_{int(expires.timestamp())}"
-
-    success = account_repo.save_token(user_id=user_id, role=role, token=token, expires_at=expires)
-    if not success:
-        raise HTTPException(status_code=500, detail="Impossible de générer le token")
-
-    return {"message": "Token généré", "access_token": token, "expires_at": expires}"""
-
-
-
-# Valider un token
-
-@router.post("/validate_token")
-def validate_token(token: Token):
-    """
-    Vérifie si un token existe et n'est pas expiré, via le repository.
-    """
-    entry = account_repo.get_token(token)
-    if not entry:
-        raise HTTPException(status_code=401, detail="Token invalide")
-
-    if datetime.utcnow() > entry["expires_at"]:
-        raise HTTPException(status_code=401, detail="Token expiré")
-
-    return {"valid": True, "user_id": entry["user_id"], "role": entry["role"]}
 
 
 

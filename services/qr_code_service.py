@@ -5,12 +5,14 @@ import base64
 import io
 from datetime import datetime, timedelta
 from typing import Dict
-from database import qr_code_repository as qr_repo
+from database.qr_code_repository import QRCodeRepository
 from database import attendance_repository as att_repo
+import qrcode
+from qrcode.constants import ERROR_CORRECT_L
 
 class QRCodeService:
     def __init__(self):
-        pass
+        self.qr_repo = QRCodeRepository()
 
     def generate_qr(self, id_seance: int, duree_validite_secondes: int = 30) -> Dict:
         """Génère un QR code pour une séance"""
@@ -25,13 +27,13 @@ class QRCodeService:
         expire_le = (datetime.now() + timedelta(seconds=duree_validite_secondes)).isoformat()
 
         # Désactiver les anciens QR codes pour cette séance
-        all_qrs = qr_repo.get_all_qr_codes()
+        all_qrs = self.qr_repo.get_all_qr_codes()
         for qr in all_qrs:
             if qr[1] == id_seance and qr[5] == 1:  # qr[1]=id_seance, qr[5]=actif
-                qr_repo.deactivate_qr(qr[0])
+                self.qr_repo.deactivate_qr(qr[0])
 
         # Insérer le nouveau QR code
-        success = qr_repo.insert_qr_code(id_seance, qr_token, date_generation, expire_le, 1)
+        success = self.qr_repo.insert_qr_code(id_seance, qr_token, date_generation, expire_le, 1)
         if not success:
             return {"success": False, "message": "Impossible de créer le QR code"}
 
@@ -39,7 +41,7 @@ class QRCodeService:
         qr_data = f"SMARTCHECK:{id_seance}:{qr_token}"
         qr_img = qrcode.QRCode(
             version=1,
-            error_correction=qrcode.constants.ERROR_CORRECT_L,
+            error_correction=ERROR_CORRECT_L,
             box_size=10,
             border=4,
         )
@@ -62,7 +64,7 @@ class QRCodeService:
 
     def scan_qr(self, qr_token: str, etudiant_id: int) -> Dict:
         """Traite le scan d'un QR code par un étudiant"""
-        qr_data = qr_repo.get_qr_by_code(qr_token)
+        qr_data = self.qr_repo.get_qr_by_code(qr_token)
         if not qr_data:
             return {"success": False, "message": "QR code invalide"}
 
@@ -73,7 +75,7 @@ class QRCodeService:
 
         # Vérifier l'expiration
         if datetime.now() > datetime.fromisoformat(expire_le):
-            qr_repo.deactivate_qr(qr_id)
+            self.qr_repo.deactivate_qr(qr_id)
             return {"success": False, "message": "QR code expiré"}
 
         # Vérifier si présence déjà enregistrée
@@ -87,7 +89,7 @@ class QRCodeService:
             return {"success": False, "message": "Impossible d'enregistrer la présence"}
 
         # Désactiver le QR code après utilisation
-        qr_repo.deactivate_qr(qr_id)
+        self.qr_repo.deactivate_qr(qr_id)
 
         return {
             "success": True,
@@ -99,7 +101,7 @@ class QRCodeService:
 
     def get_active_qr_codes(self, id_enseignant: int = None) -> Dict:
         """Récupère les QR codes actifs, optionnellement filtrés par enseignant"""
-        active_qrs = qr_repo.get_all_qr_codes(actif=1)
+        active_qrs = self.qr_repo.get_all_qr_codes(actif=1)
         result = []
 
         sessions = att_repo.get_all_sessions() if id_enseignant else None
@@ -109,7 +111,7 @@ class QRCodeService:
 
             # Vérifier expiration
             if datetime.now() > datetime.fromisoformat(expire_le):
-                qr_repo.deactivate_qr(qr_id)
+                self.qr_repo.deactivate_qr(qr_id)
                 continue
 
             # Filtrage par enseignant si demandé
