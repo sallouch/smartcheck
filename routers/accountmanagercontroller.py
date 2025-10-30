@@ -1,68 +1,51 @@
-# routers/account_manager_controller.py
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
-import secrets
+from datetime import datetime, timedelta
+from database.user_repository import AccountRepository  
+from user_models import Token
 
-router = APIRouter(
-    prefix="/account",
-    tags=["Account Management"]
-)
+router = APIRouter(prefix="/account", tags=["Account"])
 
-# Simuler une "base de données" temporaire en mémoire
-users_db = {}
+account_repo = AccountRepository()
 
-class User(BaseModel):
-    username: str
-    email: str
-    password: str
-    role: str  # "student" ou "teacher"
-    verified: bool = False
 
-@router.post("/register")
-async def register_user(user: User):
+
+# Générer un token pour un utilisateur
+
+"""@router.post("/generate_token")
+def generate_token(user_id: int, role: str):
+    
+    Crée un token pour un utilisateur et l'enregistre dans la base via le repository.
+    
+    expires = datetime.utcnow() + timedelta(hours=4)
+    token = f"token_{user_id}_{role}_{int(expires.timestamp())}"
+
+    success = account_repo.save_token(user_id=user_id, role=role, token=token, expires_at=expires)
+    if not success:
+        raise HTTPException(status_code=500, detail="Impossible de générer le token")
+
+    return {"message": "Token généré", "access_token": token, "expires_at": expires}"""
+
+
+
+# Valider un token
+
+@router.post("/validate_token")
+def validate_token(token: Token):
     """
-    Inscription d’un utilisateur avec double authentification simulée.
+    Vérifie si un token existe et n'est pas expiré, via le repository.
     """
-    if user.username in users_db:
-        raise HTTPException(status_code=400, detail="Utilisateur déjà existant")
+    entry = account_repo.get_token(token)
+    if not entry:
+        raise HTTPException(status_code=401, detail="Token invalide")
 
-    # Génération d’un code de vérification
-    verification_code = secrets.token_hex(3)
-    users_db[user.username] = user.dict()
-    users_db[user.username]["verification_code"] = verification_code
+    if datetime.utcnow() > entry["expires_at"]:
+        raise HTTPException(status_code=401, detail="Token expiré")
 
-    # Simuler l’envoi d’un e-mail de vérification
-    return {"message": f"Utilisateur créé. Code de vérification envoyé : {verification_code}"}
-
-@router.post("/verify/{username}/{code}")
-async def verify_user(username: str, code: str):
-    """
-    Validation du compte après réception du code.
-    """
-    user = users_db.get(username)
-    if not user:
-        raise HTTPException(status_code=404, detail="Utilisateur introuvable")
-
-    if user["verification_code"] != code:
-        raise HTTPException(status_code=400, detail="Code incorrect")
-
-    user["verified"] = True
-    return {"message": "Compte vérifié avec succès !"}
+    return {"valid": True, "user_id": entry["user_id"], "role": entry["role"]}
 
 
-@router.post("/login")
-async def login_user(username: str, password: str):
-    """
-    Authentification utilisateur.
-    """
-    user = users_db.get(username)
-    if not user:
-        raise HTTPException(status_code=404, detail="Utilisateur introuvable")
 
-    if user["password"] != password:
-        raise HTTPException(status_code=401, detail="Mot de passe incorrect")
 
-    if not user["verified"]:
-        raise HTTPException(status_code=401, detail="Compte non vérifié")
 
-    return {"message": f"Bienvenue {username} !"}
+
+
