@@ -27,7 +27,6 @@ def add_session(id_matiere: int, id_classe: int, id_enseignant: int, date: str, 
     if success:
         return {"message": "Séance ajoutée avec succès"}
     raise HTTPException(status_code=400, detail="Erreur lors de l'ajout de la séance")
-
 # Ajouter une présence
 @router.post("/presence")
 def add_presence(id_seance: int, id_etudiant: int, present: int = 1):

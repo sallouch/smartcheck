@@ -48,6 +48,7 @@ class AttendanceService:
             })
 
         taux_presence = (presences_count / total_seances * 100) if total_seances > 0 else 0
+        
 
         return {
             "success": True,
@@ -105,7 +106,8 @@ class AttendanceService:
             total_presences += nb_presents
             total_etudiants_potentiels += nb_total_etudiants
 
-        taux_presence_global = (total_presences / total_etudiants_potentiels * 100)
+        taux_presence_global = (total_presences / total_etudiants_potentiels * 100) if total_etudiants_potentiels > 0 else 0
+
 
         return {
             "success": True,

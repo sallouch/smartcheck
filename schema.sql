@@ -4,7 +4,7 @@ CREATE TABLE IF NOT EXISTS utilisateurs (
     prenom TEXT NOT NULL CHECK (prenom GLOB '[A-Za-z]*'),
     email TEXT UNIQUE NOT NULL,
     mot_de_passe TEXT NOT NULL,
-    role TEXT CHECK(role IN ('etudiant', 'enseignant', 'admin')) NOT NULL,
+    role TEXT CHECK(role IN ('student', 'teacher', 'admin')) NOT NULL,
     matricule TEXT,       -- for enseignants (teacher code)
     numero_inscription TEXT,  -- for students
     cin TEXT NOT NULL UNIQUE CHECK (cin GLOB '[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]'),
@@ -63,3 +63,4 @@ CREATE TABLE IF NOT EXISTS tokens (
     expires_at TEXT NOT NULL,
     FOREIGN KEY (user_id) REFERENCES utilisateurs(id)
 );
+
