@@ -88,9 +88,6 @@ class QRCodeService:
         if not success:
             return {"success": False, "message": "Impossible d'enregistrer la présence"}
 
-        # Désactiver le QR code après utilisation
-        self.qr_repo.deactivate_qr(qr_id)
-
         return {
             "success": True,
             "message": "Présence enregistrée avec succès",
