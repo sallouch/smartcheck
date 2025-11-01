@@ -85,10 +85,15 @@ class AttendanceService:
             nb_absents = nb_total_etudiants - nb_presents
             taux_presence_session = (nb_presents / nb_total_etudiants * 100)
 
-            etudiants_presents = [
-                {"nom": u[1], "prenom": u[2]}
-                for u_id, *u in self.attendance_repo.get_students_by_presence(session_id, present=1)
-            ]
+            etudiants_presents = []
+            for u_id, *_ in self.attendance_repo.get_students_by_presence(session_id, present=1):
+                # Trouver l'utilisateur correspondant (à partir de user_repo)
+                user = next((u for u in users if u[0] == u_id), None)
+                if user:
+                    etudiants_presents.append({
+                        "nom": user[1],   # nom
+                        "prenom": user[2] # prenom
+                    })
 
             rapport.append({
                 "session_id": session_id,
