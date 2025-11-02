@@ -1,14 +1,16 @@
 from fastapi import FastAPI
 from routers import QrCodeController, accountmanagercontroller, attendancecontroller
 from fastapi.middleware.cors import CORSMiddleware
+
 app = FastAPI(title="SmartCheck API")
+
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],  # ← VOTRE FRONTEND
+    allow_origins=["*"],  # ou ["http://localhost:3000"]
     allow_credentials=True,
-    allow_methods=["*"],  # GET, POST, PUT, DELETE, etc.
-    allow_headers=["*"],  # Tous les headers
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # Inclusion des routes

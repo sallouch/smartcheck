@@ -7,10 +7,12 @@ DB_PATH = "smartcheck.db"  # Chemin vers ta base
 
 # ----------------- Utilisateurs -----------------
 users = [
-    {"nom": "Alice", "prenom": "Marie", "email": "alice@example.com", "password": "pass123", "role": "student", "cin": "12345678"},
-    {"nom": "Bob", "prenom": "Jean", "email": "bob@example.com", "password": "pass456", "role": "teacher", "cin": "23456789"},
-    {"nom": "BenAli", "prenom": "Karim", "email": "karim.benali@univ.tn", "password": "pass123", "role": "teacher", "cin": "34567890"},
-    {"nom": "trojet", "prenom": "islem", "email": "islem@trojet.tn", "password": "pass123", "role": "admin", "cin": "76549898"}
+    {"nom": "Alice", "prenom": "Marie", "email": "alice@example.com", "password": "pass123", "role": "etudiant", "cin": "12345678"},
+    {"nom": "Bob", "prenom": "Jean", "email": "bob@example.com", "password": "pass456", "role": "enseignant", "cin": "23456789"},
+    {"nom": "BenAli", "prenom": "Karim", "email": "karim.benali@univ.tn", "password": "pass123", "role": "enseignant", "cin": "34567890"},
+    {"nom": "trojet", "prenom": "islem", "email": "islem@trojet.tn", "password": "pass123", "role": "admin", "cin": "76549898"},
+    {"nom": "boujdaria", "prenom": "fatma", "email":"fatma@bouj.com", "password":"pass123", "role":"etudiant", "cin":"98765432"},
+    {"nom": "esselmi", "prenom": "houda", "email":"houda@esselmi.com", "password":"pass123", "role":"enseignant", "cin":"87654321"},
 ]
 
 # ----------------- Classes -----------------
